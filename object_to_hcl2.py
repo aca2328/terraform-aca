@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 
-import socks
-import socket
 import argparse
 import getpass
 import requests
@@ -10,9 +8,6 @@ from avi.sdk.avi_api import ApiSession
 from tempfile import TemporaryDirectory
 from subprocess import run
 from os.path import abspath
-
-socks.set_default_proxy(socks.SOCKS5, "127.0.0.1", 1080)
-socket.socket = socks.socksocket
 
 if hasattr(requests.packages.urllib3, 'disable_warnings'):
     requests.packages.urllib3.disable_warnings()
