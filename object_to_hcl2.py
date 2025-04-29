@@ -1,12 +1,19 @@
 #!/usr/bin/env python
 
+"""Script to simplify the import of existing Avi objects into Terraform
+resource files using terraform import."""
+
 import argparse
 import getpass
+
 import requests
 import urllib3
 from avi.sdk.avi_api import ApiSession
+from tempfile import TemporaryDirectory
 from subprocess import run
 from os.path import abspath
+
+# Disable certificate warnings
 
 if hasattr(requests.packages.urllib3, 'disable_warnings'):
     requests.packages.urllib3.disable_warnings()
@@ -37,6 +44,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args:
+        # If not specified on the command-line, prompt the user for the
+        # controller IP address and/or password
+
         controller = args.controller
         user = args.user
         password = args.password
@@ -55,15 +65,12 @@ if __name__ == '__main__':
             password = getpass.getpass(f'Password for {user}@{controller}:')
 
         if not api_version:
-            try:
-                api = ApiSession.get_session(controller, user, password)
-                api_version = api.remote_api_version['Version']
-                api.delete_session()
-            except Exception as e:
-                print(f"Error discovering Controller version: {e}")
-                exit(1)
-            print(f'Discovered Controller version {api_version}.')
+            # Discover Controller's version if no API version specified
 
+            api = ApiSession.get_session(controller, user, password)
+            api_version = api.remote_api_version['Version']
+            api.delete_session()
+            print(f'Discovered Controller version {api_version}.')
         api = ApiSession.get_session(controller, user, password,
                                      api_version=api_version)
 
@@ -82,70 +89,63 @@ if __name__ == '__main__':
 
         print('Preparing environment', end='')
 
-        with open('main.tf', mode='w', encoding='UTF-8') as tf_main:
-            tf_version = tf_version or api_version
-            tf_boilerplate = ['terraform {\n',
-                              '  required_providers {\n',
-                              '    avi = {\n',
-                              '      source = "vmware/avi"\n',
-                              f'      version = "{tf_version}"\n',
-                              '    }\n',
-                              '  }\n',
-                              '}\n',
-                              '\n',
-                              'provider "avi" {\n',
-                              f'  avi_username    = "{user}"\n',
-                              f'  avi_tenant      = "{tenant}"\n',
-                              f'  avi_password    = "{password}"\n',
-                              f'  avi_controller  = "{controller}"\n',
-                              f'  avi_version     = "{api_version}"\n'
-                              '}\n',
-                              '\n']
-            tf_main.writelines(tf_boilerplate)
+        with TemporaryDirectory() as td:
+            with open(f'{td}/main.tf', mode='w', encoding='UTF-8') as tf_main:
+                tf_version = tf_version or api_version
+                tf_boilerplate = ['terraform {\n',
+                                  '  required_providers {\n',
+                                  '    avi = {\n',
+                                  '      source = "vmware/avi"\n',
+                                  f'      version = "{tf_version}"\n',
+                                  '    }\n',
+                                  '  }\n',
+                                  '}\n',
+                                  '\n',
+                                  'provider "avi" {\n',
+                                  f'  avi_username    = "{user}"\n',
+                                  f'  avi_tenant      = "{tenant}"\n',
+                                  f'  avi_password    = "{password}"\n',
+                                  f'  avi_controller  = "{controller}"\n',
+                                  f'  avi_version     = "{api_version}"\n'
+                                  '}\n',
+                                  '\n']
+                tf_main.writelines(tf_boilerplate)
+                resources = []
+                for obj in matching_objects:
+                    print('.', end='')
+                    object_uuid = obj['uuid']
+                    object_names = obj.get('name', object_uuid)
+                    rs = ('import {\n'
+                          f'  to = avi_{object_type}.{object_uuid}\n'
+                          f'  id = "{object_uuid}"\n'
+                          '}\n')
+                    tf_main.write(rs)
+                    resources.append((object_uuid, object_names))
+                tf_main.flush()
+                print()
 
-            resources = []
-            for obj in matching_objects:
-                print('.', end='')
-                object_uuid = obj['uuid']
-                object_name = obj.get('name', object_uuid)
-                rs = ('import {\n'
-                      f'  to = avi_{object_type}.{object_uuid}\n'
-                      f'  id = "{object_uuid}"\n'
-                      '}\n')
-                tf_main.write(rs)
-                resources.append((object_uuid, object_name))
-            tf_main.flush()
+            print(f'Initializing Terraform (vmware/avi {tf_version})...')
 
-        try:
-            p = run(['terraform', 'init'],
-                    capture_output=True, check=True)
-        except Exception as e:
-            print(f"Error during terraform init: {e}")
-            exit(1)
-        print(f'Initializing Terraform (vmware/avi {tf_version})...')
+            p = run(['terraform', f'-chdir={td}', 'init'],
+                    capture_output=True, check=False)
 
-        try:
-            p = run(['terraform',
-                            'plan',
-                            f'-out={output_fn}'],
-                        capture_output=True,
-                        check=True)
-        except Exception as e:
-                print(f"Error during terraform plan: {e}")
-                exit(1)
-        else:
-            print('Importing resources...')
-            p = run(['terraform',
-                        'plan',
-                        f'-out={output_fn}'],
-                    capture_output=True,
-                    check=False)
             if p.returncode:
-                print('Error invoking terraform plan:')
+                print('Error invoking terraform init:')
                 print(p.stderr.decode('UTF-8'))
             else:
-                print()
-                print(f'Resources have been written to {output_fn}')
+                print('Importing resources...')
+                p = run(['terraform',
+                            f'-chdir={td}',
+                            'plan',
+                            f'-generate-config-out={output_fn}'],
+                        capture_output=True,
+                        check=False)
+                if p.returncode:
+                    print('Error invoking terraform plan:')
+                    print(p.stderr.decode('UTF-8'))
+                else:
+                    print()
+                    print(f'Resources have been written to {output_fn}')
 
     else:
         parser.print_help()
