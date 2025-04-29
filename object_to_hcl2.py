@@ -89,7 +89,7 @@ if __name__ == '__main__':
                 tf_boilerplate = ['terraform {\n',
                                   '  required_providers {\n',
                                   '    avi = {\n',
-                                  '      source = "vmware/avi"\n',
+                                  '      source = "./"\n',
                                   f'      version = "{tf_version}"\n',
                                   '    }\n',
                                   '  }\n',
